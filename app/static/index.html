@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KHATA کھاتا — Merchant Payment Agent</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:960px;margin:0 auto;padding:16px;background:#f7f7f2;color:#1c1c1c}
+  h1{margin:0} .sub{color:#555}
+  .badge{display:inline-block;background:#ffe08a;border:1px solid #d9a400;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:700}
+  .warn{background:#fff3cd;border:1px solid #d9a400;border-radius:8px;padding:10px 12px;margin:12px 0}
+  .card{background:#fff;border:1px solid #ddd;border-radius:10px;padding:14px;margin:12px 0}
+  label{display:block;font-weight:600;margin:8px 0 4px}
+  input,textarea,select{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;box-sizing:border-box}
+  button{background:#075e54;color:#fff;border:0;border-radius:6px;padding:9px 16px;cursor:pointer;font-weight:600}
+  button.secondary{background:#555}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{border-bottom:1px solid #e5e5e5;padding:6px 4px;text-align:left}
+  .ok{color:#0a7a2f;font-weight:700}.bad{color:#b00020;font-weight:700}
+  .wa{background:#dcf8c6;border-radius:12px;padding:10px 12px;max-width:520px;margin:6px 0}
+  .wa .meta{font-size:12px;color:#555}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  .stat{font-size:26px;font-weight:800}
+</style>
+</head>
+<body>
+<h1>KHATA <span lang="ur">کھاتا</span></h1>
+<p class="sub">WhatsApp AI Payment &amp; Reconciliation Agent — small merchants, Islamabad
+<span class="badge">DEMO DATA</span></p>
+
+<div class="warn"><b>Honest rule:</b> a payment is <b>VERIFIED</b> only when it matches a bill/udhaar
+record you entered in KHATA. A <b>screenshot alone proves nothing</b> — screenshots can be
+edited in seconds, so KHATA never marks a payment verified from a screenshot.</div>
+
+<div class="warn" id="wa-mode">WhatsApp alerts: <b>SIMULATOR</b> — messages are shown here, not sent.
+Real WhatsApp sending needs the owner's Meta Cloud API setup (WHATSAPP_TOKEN). Nothing is sent out from this app.</div>
+
+<section class="card">
+  <h2>1 · Payment intake</h2>
+  <p>Paste a forwarded bank/wallet SMS, or send webhook JSON to
+  <code>POST /api/payments/intake</code>.</p>
+  <label for="sms">Bank / wallet SMS text</label>
+  <textarea id="sms" rows="3" placeholder="e.g. Raast: Rs. 1,500 received from Ali. Ref: RAAST123456. 17/11/2026 14:30"></textarea>
+  <p><button onclick="intakeSms()">Check &amp; record payment</button>
+  <button class="secondary" onclick="fillDemoSms()">Fill demo SMS</button></p>
+  <div id="intake-result"></div>
+</section>
+
+<section class="card">
+  <h2>2 · WhatsApp alert <span class="badge">SIMULATED</span></h2>
+  <div id="alerts"><p class="sub">No alerts yet — record a payment and the Roman Urdu alert appears here.</p></div>
+</section>
+
+<div class="grid">
+<section class="card">
+  <h2>3 · New bill / udhaar</h2>
+  <label>Customer name <input id="b-customer" placeholder="Ali"></label>
+  <label>Amount (Rs.) <input id="b-amount" type="number" min="1" step="0.01" placeholder="1500"></label>
+  <label>Item <input id="b-item" placeholder="Atta 10kg"></label>
+  <label>Quantity <input id="b-qty" type="number" min="1" value="1"></label>
+  <label>Reference (optional) <input id="b-ref" placeholder="BILL-004"></label>
+  <p><button onclick="addBill()">Save bill</button></p>
+  <div id="bill-result"></div>
+</section>
+
+<section class="card">
+  <h2>4 · Nightly summary</h2>
+  <label>Date <input id="sum-date" type="date"></label>
+  <p><button onclick="loadSummary()">Generate summary</button></p>
+  <div id="summary"></div>
+</section>
+</div>
+
+<section class="card">
+  <h2>5 · Khata (ledger) — search</h2>
+  <label>Search by customer, amount or reference
+  <input id="q" placeholder="Ali / 1500 / RAAST123" oninput="loadLedger()"></label>
+  <label>Status
+    <select id="f-status" onchange="loadLedger()">
+      <option value="">All</option><option>VERIFIED</option><option>UNVERIFIED</option>
+    </select></label>
+  <h3>Payments</h3>
+  <table><thead><tr><th>Date</th><th>Sender</th><th>Amount</th><th>Method</th><th>Ref</th><th>Status</th></tr></thead>
+  <tbody id="pay-rows"></tbody></table>
+  <h3>Bills / dues</h3>
+  <table><thead><tr><th>Customer</th><th>Item</th><th>Qty</th><th>Amount</th><th>Ref</th><th>Status</th></tr></thead>
+  <tbody id="bill-rows"></tbody></table>
+</section>
+
+<p class="sub">KHATA v1.0 · SQLite · demo merchant: Ahmed General Store, Islamabad (DEMO).
+Tax estimate in the summary is a flat assumed rate — not a tax ruling.</p>
+
+<script>
+const api = (p, o) => fetch(p, o).then(r => r.json().then(j => ({ok: r.ok, status: r.status, j})));
+
+function speak(text){
+  if(!('speechSynthesis' in window)){ alert('Browser voice not available on this device.'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ur-PK'; u.rate = 0.95;
+  speechSynthesis.speak(u);
+}
+function alertBubble(p){
+  const d = document.createElement('div');
+  d.className = 'wa';
+  d.innerHTML = `<div>${p.alert_message || ''}</div>
+    <div class="meta">WhatsApp-style alert · SIMULATED · ${new Date().toLocaleTimeString()}</div>
+    <p><button onclick='speak(${JSON.stringify(p.alert_message || '')})'>🔊 Voice note — sunain</button></p>`;
+  const box = document.getElementById('alerts');
+  if(box.querySelector('p.sub')) box.innerHTML = '';
+  box.prepend(d);
+}
+async function intakeSms(){
+  const sms = document.getElementById('sms').value.trim();
+  if(!sms){ alert('SMS text paste karein.'); return; }
+  const {ok, j} = await api('/api/payments/intake', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sms_text: sms})});
+  const el = document.getElementById('intake-result');
+  if(!ok){ el.innerHTML = `<p class="bad">Error: ${j.detail || 'parse failed'}</p>`; return; }
+  el.innerHTML = `<p>Rs. ${j.amount} · ${j.sender_name || '(no name)'} · ${j.method} ·
+    Status: <span class="${j.status==='VERIFIED'?'ok':'bad'}">${j.status}</span>
+    ${j.matched_bill ? '— matched bill #' + j.matched_bill.id : '— no matching bill'}</p>`;
+  alertBubble(j); loadLedger();
+}
+function fillDemoSms(){
+  document.getElementById('sms').value = 'Raast: Rs. 1,500 received from Ali. Ref: RAAST123456. 17/11/2026 14:30';
+}
+async function addBill(){
+  const body = {customer_name: document.getElementById('b-customer').value.trim(),
+    amount: parseFloat(document.getElementById('b-amount').value),
+    item: document.getElementById('b-item').value.trim(),
+    quantity: parseInt(document.getElementById('b-qty').value || '1'),
+    reference: document.getElementById('b-ref').value.trim()};
+  if(!body.customer_name || !body.amount){ alert('Customer name aur amount zaroori hain.'); return; }
+  const {ok, j} = await api('/api/bills', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('bill-result').innerHTML = ok ? `<p class="ok">Bill #${j.id} saved — ${j.customer_name}, Rs. ${j.amount} (open).</p>` : `<p class="bad">${j.detail || 'error'}</p>`;
+  loadLedger();
+}
+async function loadLedger(){
+  const q = document.getElementById('q').value.trim();
+  const st = document.getElementById('f-status').value;
+  const {j: pays} = await api(`/api/payments?q=${encodeURIComponent(q)}&status=${st}`);
+  document.getElementById('pay-rows').innerHTML = pays.map(p =>
+    `<tr><td>${(p.received_at||'').slice(0,16).replace('T',' ')}</td><td>${p.sender_name||'—'}</td>
+     <td>Rs. ${p.amount}</td><td>${p.method}</td><td>${p.reference||'—'}</td>
+     <td class="${p.status==='VERIFIED'?'ok':'bad'}">${p.status}</td></tr>`).join('') || '<tr><td colspan="6">No payments found.</td></tr>';
+  const {j: bills} = await api(`/api/bills?q=${encodeURIComponent(q)}`);
+  document.getElementById('bill-rows').innerHTML = bills.map(b =>
+    `<tr><td>${b.customer_name}</td><td>${b.item||'—'}</td><td>${b.quantity}</td>
+     <td>Rs. ${b.amount}</td><td>${b.reference||'—'}</td>
+     <td class="${b.status==='paid'?'ok':'bad'}">${b.status}</td></tr>`).join('') || '<tr><td colspan="6">No bills found.</td></tr>';
+}
+async function loadSummary(){
+  const day = document.getElementById('sum-date').value || new Date().toISOString().slice(0,10);
+  const {j} = await api(`/api/summary?day=${day}`);
+  const methods = Object.entries(j.per_method).map(([m,v]) => `<li>${m}: Rs. ${v}</li>`).join('') || '<li>No payments that day.</li>';
+  const items = Object.entries(j.stock_outflow_items).map(([i,v]) => `<li>${i}: ${v} unit(s)</li>`).join('') || '<li>—</li>';
+  document.getElementById('summary').innerHTML = `
+    <p class="stat">Rs. ${j.total_digital_sales}</p>
+    <p>Total digital sales · ${day} · ${j.payment_count} payment(s)<br>
+    Verified: Rs. ${j.verified_total} · Unverified: Rs. ${j.unverified_total}</p>
+    <p><b>Per method:</b></p><ul>${methods}</ul>
+    <p><b>Tax estimate:</b> Rs. ${j.tax_estimate} <span class="sub">(flat ${(j.tax_estimate_rate*100)}% assumed — not a tax ruling)</span></p>
+    <p><b>Stock outflow:</b> ${j.stock_outflow_units} unit(s) · ${j.bills_paid_today} bill(s) paid</p><ul>${items}</ul>`;
+}
+document.getElementById('sum-date').value = new Date().toISOString().slice(0,10);
+fetch('/api/health').then(r => r.json()).then(h => {
+  if(h.whatsapp_real_configured) document.getElementById('wa-mode').innerHTML =
+    'WhatsApp alerts: <b>REAL sending configured</b> (owner Meta setup active).';
+});
+loadLedger();
+</script>
+</body>
+</html>
